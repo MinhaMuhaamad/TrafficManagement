@@ -247,3 +247,24 @@ class Simulation:
             congestion_levels[edge['id']] = edge['congestion']
         
         return congestion_levels
+    
+    def enhanced_incident_handling(self, incident: Dict[str, Any]) -> None:
+        """Enhanced incident handling with severity levels and impact analysis"""
+        # Classify incident severity
+        severity = self._classify_incident_severity(incident)
+        
+        # Calculate impact radius
+        impact_radius = self._calculate_impact_radius(incident, severity)
+        
+        # Identify affected roads and intersections
+        affected_area = self._identify_affected_area(incident, impact_radius)
+        
+        # Calculate congestion ripple effect
+        congestion_spread = self._calculate_congestion_spread(affected_area)
+        
+        # Update traffic patterns
+        self._update_traffic_patterns(affected_area, congestion_spread)
+        
+        # Emergency response routing
+        if severity > 0.7:  # High severity
+            self._coordinate_emergency_response(incident)

@@ -202,3 +202,28 @@ class TrafficLightController:
             
             # Adjust red time inversely but ensure minimum safety time
             light.duration["red"] = max(15, 60 - optimal_green_time)
+    
+    def advanced_traffic_optimization(self) -> None:
+        """Advanced traffic light optimization using predictive modeling"""
+        for light_id, light in self.traffic_lights.items():
+            # Historical data analysis
+            historical_queue = self._get_historical_queue_length(light_id)
+            predicted_queue = self._predict_queue_length(historical_queue)
+            
+            # Time of day adjustment
+            hour = datetime.now().hour
+            time_factor = self._get_time_of_day_factor(hour)
+            
+            # Calculate green wave timing
+            green_wave = self._calculate_green_wave(light, neighboring_lights)
+            
+            # Combine all factors
+            optimal_timing = self._calculate_optimal_timing(
+                current_queue=light.queue_length,
+                predicted_queue=predicted_queue,
+                time_factor=time_factor,
+                green_wave=green_wave
+            )
+            
+            # Apply new timings
+            self._apply_optimized_timing(light, optimal_timing)

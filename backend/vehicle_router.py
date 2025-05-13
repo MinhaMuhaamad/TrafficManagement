@@ -435,3 +435,27 @@ class VehicleRouter:
         dy = node1['lat'] - node2['lat']
         
         return (dx ** 2 + dy ** 2) ** 0.5
+    
+    def enhanced_routing(self, origin: Any, destination: Any) -> List[Any]:
+        """Enhanced routing with better edge case handling"""
+        try:
+            # Multiple route options
+            primary_route = self.a_star_routing(origin, destination)
+            alternative_routes = self._calculate_alternative_routes(origin, destination)
+            
+            # Route evaluation
+            best_route = self._evaluate_routes([primary_route] + alternative_routes)
+            
+            # Edge case handling
+            if not best_route:
+                return self._handle_routing_failure(origin, destination)
+                
+            # Emergency vehicle priority
+            if self._is_emergency_vehicle():
+                return self._calculate_emergency_route(best_route)
+                
+            return best_route
+            
+        except Exception as e:
+            self._log_routing_error(e)
+            return self._get_fallback_route(origin, destination)

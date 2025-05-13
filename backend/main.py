@@ -19,165 +19,232 @@ from simulation import Simulation
 
 app = FastAPI(title="Smart Traffic Management System")
 
-# Set up CORS
+# Configure Socket.IO
+sio = socketio.AsyncServer(
+    async_mode='asgi',
+    cors_allowed_origins=["*"],  # Allow all origins in development
+    ping_timeout=60,
+    ping_interval=25,
+    logger=True,  # Enable logging
+    engineio_logger=True  # Enable Engine.IO logging
+)
+
+# Create ASGI app
+socket_app = socketio.ASGIApp(
+    socketio_server=sio,
+    other_asgi_app=app,
+    socketio_path='socket.io'
+)
+
+# Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, replace with specific origins
+    allow_origins=["*"],  # Allow all origins in development
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Set up Socket.IO with updated config
-sio = socketio.AsyncServer(
-    async_mode="asgi",
-    cors_allowed_origins=["http://localhost:3000"],
-    logger=True,
-    engineio_logger=True,
-    ping_timeout=120
-)
-socket_app = socketio.ASGIApp(sio)
-app.mount("/ws", socket_app)
+# Mount the Socket.IO app
+app.mount("/", socket_app)
 
-# Global state
-simulation: Optional[Simulation] = None
-city_graphs: Dict[str, CityGraph] = {}
-connected_clients = set()
+# Initialize simulation components
+city_graph = CityGraph()
+traffic_controller = TrafficLightController(city_graph)
+vehicle_router = VehicleRouter(city_graph)
+simulation = Simulation(city_graph, traffic_controller, vehicle_router)
 
-# Models
-class SimulationRequest(BaseModel):
-    city: str = "San Francisco"
+# Socket.IO event handlers
+@sio.event
+async def connect(sid, environ):
+    print(f"Client {sid} connected with headers: {environ.get('HTTP_ORIGIN')}")
+    await sio.emit('message', {'data': 'Connected to server'}, to=sid)
+    # Send initial data
+    await sio.emit('city_graph', city_graph.get_graph_data())
+    await sio.emit('traffic_lights', traffic_controller.get_traffic_lights())
+    await sio.emit('vehicles', vehicle_router.get_vehicles())
+    await sio.emit('simulation_status', {'running': simulation.is_running(), 'message': 'Initial state'})
 
-class IncidentRequest(BaseModel):
+@sio.event
+async def disconnect(sid):
+    print(f"Client {sid} disconnected")
+
+@sio.event
+async def connect_error(sid, error):
+    print(f"Connection error for {sid}: {error}")
+
+# Pydantic models
+class SimulationStart(BaseModel):
+    city: str
+    speed: float = 1.0
+    routing_algorithm: str = "a_star"
+    traffic_light_mode: str = "auto"
+
+class TrafficLightControl(BaseModel):
+    node_id: str
+    state: str
+
+class VehicleAdd(BaseModel):
+    origin: Optional[str] = None
+    destination: Optional[str] = None
+    type: str = "car"
+
+class IncidentAdd(BaseModel):
     lat: float
     lon: float
     type: str
 
-# Socket.IO events
-@sio.event
-async def connect(sid, environ):
-    print(f"Client connected: {sid}")
-    connected_clients.add(sid)
-    
-    # Send initial data if simulation is running
-    if simulation and simulation.is_running:
-        await send_simulation_data(sid)
+class SimulationSettings(BaseModel):
+    speed: Optional[float] = None
+    routing_algorithm: Optional[str] = None
+    traffic_light_mode: Optional[str] = None
 
-@sio.event
-async def disconnect(sid):
-    print(f"Client disconnected: {sid}")
-    connected_clients.remove(sid)
-
-async def send_simulation_data(sid=None):
-    """Send simulation data to connected clients"""
-    if not simulation:
-        return
-    
-    # Get data from simulation
-    city_graph = simulation.city_graph.to_dict()
-    traffic_lights = simulation.traffic_light_controller.get_traffic_lights()
-    vehicles = simulation.vehicle_router.get_vehicles()
-    incidents = simulation.get_incidents()
-    congestion = simulation.get_congestion_levels()
-    
-    # Send data to specific client or broadcast to all
-    if sid:
-        await sio.emit("city_graph", city_graph, to=sid)
-        await sio.emit("traffic_lights", traffic_lights, to=sid)
-        await sio.emit("vehicles", vehicles, to=sid)
-        await sio.emit("incidents", incidents, to=sid)
-        await sio.emit("congestion", congestion, to=sid)
-    else:
-        await sio.emit("city_graph", city_graph)
-        await sio.emit("traffic_lights", traffic_lights)
-        await sio.emit("vehicles", vehicles)
-        await sio.emit("incidents", incidents)
-        await sio.emit("congestion", congestion)
-
-# Background task for simulation updates
-async def simulation_task():
-    while True:
-        if simulation and simulation.is_running and connected_clients:
-            simulation.update()
-            await send_simulation_data()
-        await asyncio.sleep(1)  # Update every second
-
-# API routes
-@app.get("/")
-async def root():
-    return {"message": "Smart Traffic Management System API"}
-
+# FastAPI routes
 @app.post("/simulation/start")
-async def start_simulation(request: SimulationRequest):
-    global simulation
-    
+async def start_simulation(settings: SimulationStart):
     try:
-        # Create or get city graph
-        if request.city not in city_graphs:
-            city_graphs[request.city] = CityGraph(request.city)
-        
-        city_graph = city_graphs[request.city]
-        
-        # Create simulation components
-        traffic_light_controller = TrafficLightController(city_graph)
-        vehicle_router = VehicleRouter(city_graph)
-        
-        # Create and start simulation
-        simulation = Simulation(
-            city_graph=city_graph,
-            traffic_light_controller=traffic_light_controller,
-            vehicle_router=vehicle_router
+        simulation.start(
+            city=settings.city,
+            speed=settings.speed,
+            routing_algorithm=settings.routing_algorithm,
+            traffic_light_mode=settings.traffic_light_mode
         )
-        simulation.start()
-        
-        return {"status": "success", "message": f"Simulation started for {request.city}"}
-    
+        return JSONResponse({
+            "status": "success",
+            "message": f"Simulation started for {settings.city}"
+        })
     except Exception as e:
-        return JSONResponse(
-            status_code=500,
-            content={"status": "error", "message": str(e)}
-        )
+        return JSONResponse({
+            "status": "error",
+            "message": str(e)
+        }, status_code=500)
 
 @app.post("/simulation/stop")
 async def stop_simulation():
-    global simulation
-    
-    if not simulation:
-        return {"status": "error", "message": "No simulation is running"}
-    
-    simulation.stop()
-    return {"status": "success", "message": "Simulation stopped"}
+    try:
+        simulation.stop()
+        return JSONResponse({
+            "status": "success",
+            "message": "Simulation stopped"
+        })
+    except Exception as e:
+        return JSONResponse({
+            "status": "error",
+            "message": str(e)
+        }, status_code=500)
+
+@app.post("/simulation/settings")
+async def update_simulation_settings(settings: SimulationSettings):
+    try:
+        simulation.update_settings(
+            speed=settings.speed,
+            routing_algorithm=settings.routing_algorithm,
+            traffic_light_mode=settings.traffic_light_mode
+        )
+        return JSONResponse({
+            "status": "success",
+            "message": "Simulation settings updated"
+        })
+    except Exception as e:
+        return JSONResponse({
+            "status": "error",
+            "message": str(e)
+        }, status_code=500)
+
+@app.post("/traffic_lights/control")
+async def control_traffic_light(control: TrafficLightControl):
+    try:
+        success = traffic_controller.set_traffic_light(control.node_id, control.state)
+        if success:
+            await sio.emit('traffic_lights', traffic_controller.get_traffic_lights())
+            return JSONResponse({
+                "status": "success",
+                "message": f"Traffic light {control.node_id} set to {control.state}"
+            })
+        else:
+            return JSONResponse({
+                "status": "error",
+                "message": "Failed to control traffic light"
+            }, status_code=400)
+    except Exception as e:
+        return JSONResponse({
+            "status": "error",
+            "message": str(e)
+        }, status_code=500)
+
+@app.post("/vehicles/add")
+async def add_vehicle(vehicle: VehicleAdd):
+    try:
+        vehicle_id = vehicle_router.add_vehicle(
+            vehicle.origin,
+            vehicle.destination,
+            vehicle.type
+        )
+        await sio.emit('vehicles', vehicle_router.get_vehicles())
+        return JSONResponse({
+            "status": "success",
+            "message": f"Vehicle {vehicle_id} added",
+            "vehicle_id": vehicle_id
+        })
+    except Exception as e:
+        return JSONResponse({
+            "status": "error",
+            "message": str(e)
+        }, status_code=500)
 
 @app.post("/incidents/add")
-async def add_incident(request: IncidentRequest):
-    if not simulation or not simulation.is_running:
-        return JSONResponse(
-            status_code=400,
-            content={"status": "error", "message": "No simulation is running"}
-        )
-    
+async def add_incident(incident: IncidentAdd):
     try:
-        incident_id = simulation.add_incident(
-            lat=request.lat,
-            lon=request.lon,
-            incident_type=request.type
-        )
-        
-        return {
-            "status": "success", 
-            "message": f"{request.type} incident added",
-            "incident_id": incident_id
-        }
-    
+        simulation.add_incident(incident.lat, incident.lon, incident.type)
+        await sio.emit('incidents', simulation.get_incidents())
+        return JSONResponse({
+            "status": "success",
+            "message": f"{incident.type} incident added"
+        })
     except Exception as e:
-        return JSONResponse(
-            status_code=500,
-            content={"status": "error", "message": str(e)}
-        )
+        return JSONResponse({
+            "status": "error",
+            "message": str(e)
+        }, status_code=500)
 
+@app.get("/analytics")
+async def get_analytics():
+    try:
+        return JSONResponse(simulation.get_analytics())
+    except Exception as e:
+        return JSONResponse({
+            "status": "error",
+            "message": str(e)
+        }, status_code=500)
+
+# Simulation loop
+async def simulation_loop():
+    while True:
+        if simulation.is_running():
+            simulation.update()
+            await sio.emit('city_graph', city_graph.get_graph_data())
+            await sio.emit('traffic_lights', traffic_controller.get_traffic_lights())
+            await sio.emit('vehicles', vehicle_router.get_vehicles())
+            await sio.emit('incidents', simulation.get_incidents())
+            await sio.emit('congestion', simulation.get_congestion_levels())
+            await sio.emit('analytics', simulation.get_analytics())
+            await sio.emit('simulation_status', {
+                'running': simulation.is_running(),
+                'message': 'Simulation update'
+            })
+        await asyncio.sleep(0.1)  # Update every 100ms
+
+# Start simulation loop on startup
 @app.on_event("startup")
 async def startup_event():
-    asyncio.create_task(simulation_task())
+    asyncio.create_task(simulation_loop())
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    import uvicorn
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=8000,
+        log_level="debug",  # Enable debug logging
+        reload=True
+    )
