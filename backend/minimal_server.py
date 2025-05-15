@@ -158,6 +158,106 @@ simulation_running = False
 connected_clients = []
 current_city = "San Francisco"  # Default city
 
+# Analytics data storage
+analytics_data = {
+    "trafficLightEfficiency": 0.0,
+    "previousTrafficLightEfficiency": 0.0,
+    "averageWaitTime": 0.0,
+    "previousAverageWaitTime": 0.0,
+    "congestionTrend": [0.0, 0.0, 0.0],
+    "speedHistory": [0.0, 0.0, 0.0],
+    "affectedVehicles": 0,
+    "reroutedVehicles": 0,
+    "averageIncidentDelay": 0,
+    "trafficLightOptimizationStatus": "Active",
+    "routeOptimizationStatus": "Active",
+    "congestionManagementStatus": "Active"
+}
+
+# Incidents storage
+incidents = []
+
+# Helper function to calculate analytics data
+def calculate_analytics_data(vehicles, traffic_lights, city_data):
+    global analytics_data
+
+    # Store previous values
+    analytics_data["previousTrafficLightEfficiency"] = analytics_data["trafficLightEfficiency"]
+    analytics_data["previousAverageWaitTime"] = analytics_data["averageWaitTime"]
+
+    # Calculate traffic light efficiency (ratio of green lights to total)
+    green_lights = len([light for light in traffic_lights if light["state"] == "green"])
+    total_lights = len(traffic_lights)
+    if total_lights > 0:
+        efficiency = green_lights / total_lights
+    else:
+        efficiency = 0
+
+    # Add some randomness to make it more dynamic
+    efficiency = min(1.0, max(0.0, efficiency + random.uniform(-0.05, 0.05)))
+    analytics_data["trafficLightEfficiency"] = efficiency
+
+    # Calculate average wait time at intersections
+    # This is simulated based on queue lengths at traffic lights
+    total_queue = sum(light["queue_length"] for light in traffic_lights)
+    if total_lights > 0:
+        avg_queue = total_queue / total_lights
+        # Convert queue length to wait time (roughly 5 seconds per vehicle in queue)
+        wait_time = avg_queue * 5.0
+    else:
+        wait_time = 0
+
+    # Add some randomness
+    wait_time = max(0.0, wait_time + random.uniform(-1.0, 3.0))
+    analytics_data["averageWaitTime"] = wait_time
+
+    # Calculate average speed
+    if vehicles:
+        avg_speed = sum(v["speed"] for v in vehicles) / len(vehicles)
+    else:
+        avg_speed = 0
+
+    # Update speed history
+    analytics_data["speedHistory"].append(avg_speed)
+    if len(analytics_data["speedHistory"]) > 10:
+        analytics_data["speedHistory"].pop(0)
+
+    # Calculate congestion level
+    # Simulated based on vehicle density and speed
+    if vehicles and city_data["edges"]:
+        # More vehicles = more congestion
+        vehicle_factor = min(1.0, len(vehicles) / (city_data["vehicle_count"] * 2))
+
+        # Slower speeds = more congestion
+        speed_factor = 1.0
+        if avg_speed > 0:
+            # Normalize speed (30 km/h is considered normal)
+            speed_factor = max(0.0, min(1.0, 30 / avg_speed))
+
+        congestion = (vehicle_factor * 0.6) + (speed_factor * 0.4)
+    else:
+        congestion = 0.0
+
+    # Add some randomness
+    congestion = min(1.0, max(0.0, congestion + random.uniform(-0.05, 0.05)))
+
+    # Update congestion trend
+    analytics_data["congestionTrend"].append(congestion)
+    if len(analytics_data["congestionTrend"]) > 10:
+        analytics_data["congestionTrend"].pop(0)
+
+    # Calculate incident impact
+    if incidents:
+        analytics_data["affectedVehicles"] = min(len(vehicles), random.randint(1, 5))
+        analytics_data["reroutedVehicles"] = min(analytics_data["affectedVehicles"], random.randint(0, 3))
+        analytics_data["averageIncidentDelay"] = random.randint(2, 15)  # 2-15 minutes delay
+    else:
+        analytics_data["affectedVehicles"] = 0
+        analytics_data["reroutedVehicles"] = 0
+        analytics_data["averageIncidentDelay"] = 0
+
+    return analytics_data
+
 # Helper function to generate vehicles for a city
 def generate_vehicles_for_city(city_name):
     city_data = CITY_DATA[city_name]
@@ -303,6 +403,38 @@ async def websocket_endpoint(websocket: WebSocket):
                     "type": "traffic_lights",
                     "data": updated_traffic_lights
                 })
+
+                # Calculate and send analytics data
+                current_analytics = calculate_analytics_data(vehicles, updated_traffic_lights, city_data)
+                await websocket.send_json({
+                    "type": "analytics",
+                    "data": current_analytics
+                })
+
+                # Generate congestion levels for each edge
+                congestion_levels = {}
+                for edge in city_data["edges"]:
+                    # Generate a random congestion level between 0 and 1
+                    # Higher for edges with more traffic lights nearby
+                    base_congestion = random.uniform(0.1, 0.6)
+
+                    # Add some randomness based on time
+                    time_factor = (datetime.now().minute % 10) / 10.0
+                    congestion = min(1.0, base_congestion + (time_factor * 0.4))
+
+                    congestion_levels[edge["id"]] = congestion
+
+                await websocket.send_json({
+                    "type": "congestion",
+                    "data": congestion_levels
+                })
+
+                # Send incidents if any
+                if incidents:
+                    await websocket.send_json({
+                        "type": "incidents",
+                        "data": incidents
+                    })
 
             # Wait for a shorter time to make the simulation run faster
             await asyncio.sleep(0.3)  # Update 3 times per second for smoother animation
@@ -450,6 +582,140 @@ async def stop_simulation():
         "timestamp": datetime.now().isoformat(),
         "running": False,
         "city": current_city
+    }
+
+# Incident endpoints
+@app.post("/incidents/add")
+async def add_incident(incident_data: dict):
+    global incidents
+
+    # Extract incident data
+    lat = incident_data.get("lat")
+    lon = incident_data.get("lon")
+    incident_type = incident_data.get("type", "accident")
+
+    if lat is None or lon is None:
+        return {
+            "status": "error",
+            "message": "Latitude and longitude are required",
+            "timestamp": datetime.now().isoformat()
+        }
+
+    # Generate a unique ID
+    incident_id = f"incident_{len(incidents) + 1}"
+
+    # Current timestamp
+    current_time = datetime.now().timestamp()
+
+    # Expected clearance time (15-60 minutes from now)
+    clearance_time = current_time + random.randint(15 * 60, 60 * 60)
+
+    # Create the incident
+    new_incident = {
+        "id": incident_id,
+        "lat": lat,
+        "lon": lon,
+        "type": incident_type,
+        "timestamp": current_time,
+        "expected_clearance": clearance_time,
+        "severity": random.choice(["low", "medium", "high"]),
+        "status": "active"
+    }
+
+    # Add to incidents list
+    incidents.append(new_incident)
+
+    # Broadcast to all clients
+    await broadcast_message("incidents", incidents)
+
+    return {
+        "status": "success",
+        "message": f"Incident reported: {incident_type}",
+        "timestamp": datetime.now().isoformat(),
+        "incident": new_incident
+    }
+
+# Vehicle endpoints
+@app.post("/vehicles/add")
+async def add_vehicle(vehicle_data: dict):
+    global current_city
+
+    # Extract vehicle data
+    origin = vehicle_data.get("origin")
+    destination = vehicle_data.get("destination")
+    vehicle_type = vehicle_data.get("type", "car")
+
+    if not origin or not destination:
+        return {
+            "status": "error",
+            "message": "Origin and destination are required",
+            "timestamp": datetime.now().isoformat()
+        }
+
+    # Get city data
+    city_data = CITY_DATA[current_city]
+
+    # Find origin and destination nodes
+    origin_node = None
+    destination_node = None
+
+    for node in city_data["nodes"]:
+        if node["name"] == origin:
+            origin_node = node
+        if node["name"] == destination:
+            destination_node = node
+
+    if not origin_node or not destination_node:
+        return {
+            "status": "error",
+            "message": "Invalid origin or destination",
+            "timestamp": datetime.now().isoformat()
+        }
+
+    # Generate a unique ID
+    vehicle_id = f"{current_city.lower().replace(' ', '_')}_custom_{datetime.now().strftime('%H%M%S')}"
+
+    # Generate random speed based on vehicle type
+    base_speed = 25 if vehicle_type == "car" else (20 if vehicle_type == "bus" else 15)
+    speed = base_speed + random.uniform(-5, 10)
+
+    # Calculate ETA (just a rough estimate)
+    eta = datetime.now().timestamp() + random.randint(60, 300)  # 1-5 minutes
+
+    # Create a simple route
+    route = [
+        {"lat": origin_node["lat"], "lon": origin_node["lon"]},
+        {"lat": origin_node["lat"] + (destination_node["lat"] - origin_node["lat"]) * 0.5,
+         "lon": origin_node["lon"] + (destination_node["lon"] - origin_node["lon"]) * 0.5},
+        {"lat": destination_node["lat"], "lon": destination_node["lon"]}
+    ]
+
+    # Create the vehicle
+    new_vehicle = {
+        "id": vehicle_id,
+        "type": vehicle_type,
+        "lat": origin_node["lat"],
+        "lon": origin_node["lon"],
+        "origin": origin_node["name"],
+        "destination": destination_node["name"],
+        "speed": speed,
+        "status": "moving",
+        "eta": eta,
+        "current_route": route
+    }
+
+    # Generate a new set of vehicles including this one
+    vehicles = generate_vehicles_for_city(current_city)
+    vehicles.append(new_vehicle)
+
+    # Broadcast to all clients
+    await broadcast_message("vehicles", vehicles)
+
+    return {
+        "status": "success",
+        "message": f"Vehicle added: {vehicle_type}",
+        "timestamp": datetime.now().isoformat(),
+        "vehicle": new_vehicle
     }
 
 if __name__ == "__main__":

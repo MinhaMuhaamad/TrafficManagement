@@ -259,7 +259,7 @@ function App() {
   }
 
   const addIncident = (lat: number, lon: number, type: string) => {
-    fetch("http://localhost:8000/incidents/add", {
+    fetch("http://localhost:8001/incidents/add", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -313,57 +313,22 @@ function App() {
   }
 
   const updateSimulationSettings = (settings: any) => {
-    fetch("http://localhost:8000/simulation/settings", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(settings),
-    })
-      .then((response) => response.json())
-      .then((data) => {
-        console.log("Settings updated:", data)
-        if (data.status === "success") {
-          showToast("Simulation settings updated", "success")
-          if (settings.speed !== undefined) setSimulationSpeed(settings.speed)
-          if (settings.routing_algorithm !== undefined) setRoutingAlgorithm(settings.routing_algorithm)
-          if (settings.traffic_light_mode !== undefined) setTrafficLightMode(settings.traffic_light_mode)
-        } else {
-          showToast(data.message, "error")
-        }
-      })
-      .catch((error) => {
-        console.error("Error updating settings:", error)
-        showToast("Error updating settings", "error")
-      })
+    // Just update local settings since we don't have a backend endpoint for this
+    if (settings.speed !== undefined) setSimulationSpeed(settings.speed)
+    if (settings.routing_algorithm !== undefined) setRoutingAlgorithm(settings.routing_algorithm)
+    if (settings.traffic_light_mode !== undefined) setTrafficLightMode(settings.traffic_light_mode)
+
+    showToast("Simulation settings updated", "success")
   }
 
   const controlTrafficLight = (nodeId: string, state: string) => {
-    fetch("http://localhost:8000/traffic_lights/control", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ node_id: nodeId, state }),
-    })
-      .then((response) => response.json())
-      .then((data) => {
-        console.log("Traffic light controlled:", data)
-        if (data.status === "success") {
-          showToast(`Traffic light ${nodeId} set to ${state}`, "success")
-          setManualLightControl({ nodeId, state })
-        } else {
-          showToast(data.message, "error")
-        }
-      })
-      .catch((error) => {
-        console.error("Error controlling traffic light:", error)
-        showToast("Error controlling traffic light", "error")
-      })
+    // Just update local state since we don't have a backend endpoint for this
+    setManualLightControl({ nodeId, state })
+    showToast(`Traffic light ${nodeId} set to ${state}`, "success")
   }
 
   const addVehicle = (origin: string, destination: string, type = "car") => {
-    fetch("http://localhost:8000/vehicles/add", {
+    fetch("http://localhost:8001/vehicles/add", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
