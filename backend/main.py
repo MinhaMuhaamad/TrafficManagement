@@ -10,23 +10,30 @@ import time
 import json
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Any
-
 # Import our modules
 from city_graph import CityGraph
 from traffic_light_controller import TrafficLightController
 from vehicle_router import VehicleRouter
 from simulation import Simulation
-
 app = FastAPI(title="Smart Traffic Management System")
-
+# Add CORS middleware FIRST - order matters!
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allow all origins in development
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=["*"]  # Expose all headers
+)
 # Configure Socket.IO
 sio = socketio.AsyncServer(
     async_mode='asgi',
     cors_allowed_origins=["*"],  # Allow all origins in development
-    ping_timeout=60,
+    ping_timeout=120,  # Increase timeout
     ping_interval=25,
     logger=True,  # Enable logging
-    engineio_logger=True  # Enable Engine.IO logging
+    engineio_logger=True,  # Enable Engine.IO logging
+    always_connect=True  # Always accept connections
 )
 
 # Create ASGI app
@@ -36,20 +43,11 @@ socket_app = socketio.ASGIApp(
     socketio_path='socket.io'
 )
 
-# Add CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # Allow all origins in development
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
 # Mount the Socket.IO app
 app.mount("/", socket_app)
 
 # Initialize simulation components
-city_graph = CityGraph()
+city_graph = CityGraph(city_name="San Francisco")  # Provide a default city name
 traffic_controller = TrafficLightController(city_graph)
 vehicle_router = VehicleRouter(city_graph)
 simulation = Simulation(city_graph, traffic_controller, vehicle_router)
@@ -64,7 +62,6 @@ async def connect(sid, environ):
     await sio.emit('traffic_lights', traffic_controller.get_traffic_lights())
     await sio.emit('vehicles', vehicle_router.get_vehicles())
     await sio.emit('simulation_status', {'running': simulation.is_running(), 'message': 'Initial state'})
-
 @sio.event
 async def disconnect(sid):
     print(f"Client {sid} disconnected")
@@ -93,12 +90,10 @@ class IncidentAdd(BaseModel):
     lat: float
     lon: float
     type: str
-
 class SimulationSettings(BaseModel):
     speed: Optional[float] = None
     routing_algorithm: Optional[str] = None
     traffic_light_mode: Optional[str] = None
-
 # FastAPI routes
 @app.post("/simulation/start")
 async def start_simulation(settings: SimulationStart):
@@ -238,13 +233,5 @@ async def simulation_loop():
 @app.on_event("startup")
 async def startup_event():
     asyncio.create_task(simulation_loop())
-
 if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(
-        app,
-        host="0.0.0.0",
-        port=8000,
-        log_level="debug",  # Enable debug logging
-        reload=True
-    )
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True, workers=1)

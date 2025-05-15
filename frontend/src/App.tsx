@@ -3,7 +3,7 @@ import { useEffect, useState, useCallback } from "react"
 import { MapContainer, TileLayer, Marker, Popup, Polyline, Circle, useMap, LayerGroup, Tooltip } from "react-leaflet"
 import "leaflet/dist/leaflet.css"
 import "./App.css"
-import { io } from "socket.io-client"
+// import { io } from "socket.io-client" // Not using Socket.IO anymore
 import L from "leaflet"
 import { TrafficLight } from "./components/TrafficLight"
 import { VehicleRouting } from "./components/VehicleRouting"
@@ -125,90 +125,75 @@ function App() {
   }, [])
 
   useEffect(() => {
-    // Connect to WebSocket server
-    const socket = io("http://localhost:8000", {
-      transports: ["websocket"],
-      path: "/socket.io", // Match the path with server
-      reconnection: true,
-      reconnectionAttempts: 5,
-      reconnectionDelay: 1000,
-      reconnectionDelayMax: 5000,
-      timeout: 20000,
-      autoConnect: true,
-      withCredentials: false, // Set to false since we're using "*" for CORS
-    })
+    // Use direct WebSocket connection instead of Socket.IO
+    const ws = new WebSocket('ws://localhost:8001/ws');
 
-    socket.on("connect", () => {
-      console.log("Connected to WebSocket server")
-      setIsConnected(true)
-      showToast("Connected to server", "success")
-    })
+    ws.onopen = () => {
+      console.log("WebSocket connected");
+      setIsConnected(true);
+      showToast("Connected to server", "success");
+    };
 
-    socket.on("connect_error", (error) => {
-      console.error("WebSocket connection error:", error)
-      setIsConnected(false)
-      showToast("Connection error: " + error.message, "error")
-    })
+    ws.onerror = (error) => {
+      console.error("WebSocket error:", error);
+      setIsConnected(false);
+      showToast("Connection error", "error");
+    };
 
-    socket.on("disconnect", () => {
-      console.log("Disconnected from WebSocket server")
-      setIsConnected(false)
-      showToast("Disconnected from server", "error")
-    })
+    ws.onclose = () => {
+      console.log("WebSocket disconnected");
+      setIsConnected(false);
+      showToast("Disconnected from server", "error");
+    };
 
-    socket.on("message", (data) => {
-      console.log("Received message:", data)
-    })
+    ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        console.log("Received message:", data);
 
-    socket.on("city_graph", (data) => {
-      console.log("Received city graph:", data)
-      setCityGraph(data)
-      if (data.nodes && data.nodes.length > 0) {
-        setMapCenter([data.nodes[0].lat, data.nodes[0].lon])
+        // Handle different message types
+        if (data.type === "city_graph") {
+          setCityGraph(data.data);
+          if (data.data.nodes && data.data.nodes.length > 0) {
+            setMapCenter([data.data.nodes[0].lat, data.data.nodes[0].lon]);
+          }
+        } else if (data.type === "traffic_lights") {
+          setTrafficLights(data.data);
+        } else if (data.type === "vehicles") {
+          setVehicles(data.data);
+        } else if (data.type === "incidents") {
+          setIncidents(data.data);
+        } else if (data.type === "congestion") {
+          setCongestionLevels(data.data);
+        } else if (data.type === "analytics") {
+          setAnalyticsData(data.data);
+        } else if (data.type === "simulation_status") {
+          setSimulationRunning(data.data.running);
+          if (data.data.message) {
+            showToast(data.data.message, data.data.status || "info");
+          }
+        }
+      } catch (error) {
+        console.error("Error parsing WebSocket message:", error);
       }
-    })
+    };
 
-    socket.on("traffic_lights", (data) => {
-      console.log("Received traffic lights:", data)
-      setTrafficLights(data)
-    })
-
-    socket.on("vehicles", (data) => {
-      console.log("Received vehicles:", data)
-      setVehicles(data)
-    })
-
-    socket.on("incidents", (data) => {
-      console.log("Received incidents:", data)
-      setIncidents(data)
-    })
-
-    socket.on("congestion", (data) => {
-      console.log("Received congestion levels:", data)
-      setCongestionLevels(data)
-    })
-
-    socket.on("analytics", (data) => {
-      console.log("Received analytics data:", data)
-      setAnalyticsData(data)
-    })
-
-    socket.on("simulation_status", (data) => {
-      console.log("Simulation status:", data)
-      setSimulationRunning(data.running)
-      if (data.message) {
-        showToast(data.message, data.status || "info")
+    // Send a ping every 5 seconds to keep the connection alive
+    const pingInterval = setInterval(() => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "ping" }));
       }
-    })
+    }, 5000);
 
     // Clean up on component unmount
     return () => {
-      socket.close() // Use close() instead of disconnect()
+      clearInterval(pingInterval);
+      ws.close();
     }
   }, [showToast])
 
   const startSimulation = () => {
-    fetch("http://localhost:8000/simulation/start", {
+    fetch("http://localhost:8001/simulation/start", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -237,7 +222,7 @@ function App() {
   }
 
   const stopSimulation = () => {
-    fetch("http://localhost:8000/simulation/stop", {
+    fetch("http://localhost:8001/simulation/stop", {
       method: "POST",
     })
       .then((response) => response.json())

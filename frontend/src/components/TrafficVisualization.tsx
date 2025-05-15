@@ -13,7 +13,6 @@ interface TrafficVisualizationProps {
   }>;
   trafficFlow: any;
 }
-
 export const TrafficVisualization: React.FC<TrafficVisualizationProps> = ({
   congestionData,
   incidents,

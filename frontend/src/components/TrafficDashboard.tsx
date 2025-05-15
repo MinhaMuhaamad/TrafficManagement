@@ -150,5 +150,4 @@ export const TrafficDashboard: React.FC<TrafficDashboardProps> = ({
     </div>
   )
 }
-
 export {}

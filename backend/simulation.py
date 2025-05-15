@@ -33,6 +33,29 @@ class Simulation:
         
         # Simulation thread
         self.simulation_thread = None
+        
+        # Analytics data
+        self.analytics = {
+            "start_time": 0,
+            "elapsed_time": 0,
+            "vehicle_count_history": [],
+            "congestion_trend": [],
+            "traffic_light_efficiency": 0,
+            "previous_traffic_light_efficiency": 0,
+            "average_wait_time": 0,
+            "previous_average_wait_time": 0,
+            "affected_vehicles": 0,
+            "rerouted_vehicles": 0,
+            "average_incident_delay": 0,
+            "traffic_light_optimization_status": "Active",
+            "route_optimization_status": "Active",
+            "congestion_management_status": "Active",
+            "speed_history": []
+        }
+        
+        # Update interval for analytics
+        self.analytics_update_interval = 10  # seconds
+        self.last_analytics_update = 0
     
     def start(self) -> None:
         """Start the simulation"""
@@ -41,6 +64,7 @@ class Simulation:
         
         self.is_running = True
         self.last_update_time = time.time()
+        self.analytics["start_time"] = time.time()
         
         # Start simulation thread
         self.simulation_thread = threading.Thread(target=self._simulation_loop)
@@ -67,6 +91,9 @@ class Simulation:
         delta_time = current_time - self.last_update_time
         self.last_update_time = current_time
         
+        # Update analytics
+        self.analytics["elapsed_time"] = current_time - self.analytics["start_time"]
+        
         # Spawn new vehicles
         self._spawn_vehicles(delta_time)
         
@@ -87,8 +114,17 @@ class Simulation:
             self.vehicle_router.get_edge_vehicle_counts()
         )
         
-        # Use dynamic programming for traffic light optimization
-        self.traffic_light_controller.dynamic_programming_optimization()
+        # Use dynamic programming for traffic light optimization if in that mode
+        if self.traffic_light_controller.control_mode == "dynamic_programming":
+            self.traffic_light_controller.dynamic_programming_optimization()
+            
+        # Use multi-vehicle routing optimization
+        self.vehicle_router.optimize_multi_vehicle_routing()
+        
+        # Update analytics periodically
+        if current_time - self.last_analytics_update > self.analytics_update_interval:
+            self._update_analytics()
+            self.last_analytics_update = current_time
     
     def _spawn_vehicles(self, delta_time: float) -> None:
         """
@@ -110,7 +146,14 @@ class Simulation:
         
         # Spawn vehicles
         for _ in range(num_to_spawn):
-            self.vehicle_router.add_vehicle()
+            # Randomly choose vehicle type
+            vehicle_type = random.choices(
+                ["car", "bus", "truck"],
+                weights=[0.8, 0.15, 0.05],
+                k=1
+            )[0]
+            
+            self.vehicle_router.add_vehicle(vehicle_type=vehicle_type)
     
     def _generate_incidents(self, delta_time: float) -> None:
         """
@@ -132,7 +175,7 @@ class Simulation:
             lon = edge['source_lon'] + progress * (edge['target_lon'] - edge['source_lon'])
             
             # Choose incident type
-            incident_type = random.choice(["accident", "congestion"])
+            incident_type = random.choice(["accident", "congestion", "construction"])
             
             # Add the incident
             self.add_incident(lat, lon, incident_type)
@@ -175,6 +218,8 @@ class Simulation:
             duration = random.randint(300, 900)  # 5-15 minutes
         elif incident_type == "congestion":
             duration = random.randint(180, 600)  # 3-10 minutes
+        elif incident_type == "construction":
+            duration = random.randint(600, 1800)  # 10-30 minutes
         else:
             duration = random.randint(60, 300)  # 1-5 minutes
         
@@ -201,9 +246,15 @@ class Simulation:
             # Congestion incidents increase existing congestion
             current_congestion = nearest_edge.get('congestion', 0)
             self.city_graph.update_edge_congestion(nearest_edge['id'], min(1.0, current_congestion + 0.5))
+        elif incident_type == "construction":
+            # Construction causes moderate congestion
+            self.city_graph.update_edge_congestion(nearest_edge['id'], 0.7)
         
         # Reroute affected vehicles
-        self.vehicle_router.reroute_vehicles([nearest_edge['id']])
+        affected_count = self.vehicle_router.reroute_vehicles([nearest_edge['id']])
+        
+        # Update analytics
+        self.analytics["affected_vehicles"] += affected_count
         
         return incident_id
     
@@ -247,24 +298,105 @@ class Simulation:
             congestion_levels[edge['id']] = edge['congestion']
         
         return congestion_levels
+        
+    def _update_analytics(self) -> None:
+        """Update analytics data"""
+        # Vehicle count history
+        self.analytics["vehicle_count_history"].append({
+            "timestamp": time.time(),
+            "count": len(self.vehicle_router.vehicles)
+        })
+        
+        # Congestion trend
+        avg_congestion = 0
+        if self.city_graph.edges:
+            avg_congestion = sum(edge['congestion'] for edge in self.city_graph.edges) / len(self.city_graph.edges)
+        
+        self.analytics["congestion_trend"].append(avg_congestion)
+        
+        # Traffic light efficiency
+        traffic_light_analytics = self.traffic_light_controller.get_analytics()
+        self.analytics["previous_traffic_light_efficiency"] = self.analytics["traffic_light_efficiency"]
+        self.analytics["traffic_light_efficiency"] = traffic_light_analytics["efficiency"]
+        
+        # Average wait time
+        total_wait_time = 0
+        count = 0
+        
+        for light in self.traffic_light_controller.traffic_lights.values():
+            if light.state == "red" and light.queue_length > 0:
+                # Estimate wait time based on remaining red time and queue length
+                remaining_time = light.next_change - time.time()
+                wait_time = remaining_time * (1 + 0.1 * light.queue_length)  # Longer queues wait longer
+                total_wait_time += wait_time
+                count += 1
+        
+        self.analytics["previous_average_wait_time"] = self.analytics["average_wait_time"]
+        self.analytics["average_wait_time"] = total_wait_time / max(1, count) if count > 0 else 0
+        
+        # Vehicle router analytics
+        vehicle_analytics = self.vehicle_router.get_analytics()
+        self.analytics["rerouted_vehicles"] = vehicle_analytics["total_reroutes"]
+        
+        # Average speed
+        avg_speed = 0
+        if self.vehicle_router.vehicles:
+            avg_speed = sum(v.speed for v in self.vehicle_router.vehicles.values()) / len(self.vehicle_router.vehicles)
+        
+        self.analytics["speed_history"].append(avg_speed)
+        
+        # Average incident delay
+        if self.incidents:
+            total_delay = 0
+            for incident in self.incidents.values():
+                delay = incident["expected_clearance"] - incident["timestamp"]
+                total_delay += delay
+            
+            self.analytics["average_incident_delay"] = total_delay / len(self.incidents) / 60  # Convert to minutes
     
-    def enhanced_incident_handling(self, incident: Dict[str, Any]) -> None:
-        """Enhanced incident handling with severity levels and impact analysis"""
-        # Classify incident severity
-        severity = self._classify_incident_severity(incident)
+    def get_analytics(self) -> Dict[str, Any]:
+        """Get analytics data"""
+        return self.analytics
+    
+    def set_traffic_light_control_mode(self, mode: str) -> bool:
+        """
+        Set the traffic light control mode.
         
-        # Calculate impact radius
-        impact_radius = self._calculate_impact_radius(incident, severity)
+        Args:
+            mode: Control mode (auto, dynamic_programming, manual)
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        return self.traffic_light_controller.set_control_mode(mode)
+    
+    def control_traffic_light(self, node_id: str, state: str) -> bool:
+        """
+        Control a specific traffic light.
         
-        # Identify affected roads and intersections
-        affected_area = self._identify_affected_area(incident, impact_radius)
+        Args:
+            node_id: ID of the node with the traffic light
+            state: New state (red, green, yellow)
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        return self.traffic_light_controller.set_traffic_light_state(node_id, state)
+    
+    def add_vehicle(self, origin: str = None, destination: str = None, vehicle_type: str = "car") -> str:
+        """
+        Add a vehicle to the simulation.
         
-        # Calculate congestion ripple effect
-        congestion_spread = self._calculate_congestion_spread(affected_area)
-        
-        # Update traffic patterns
-        self._update_traffic_patterns(affected_area, congestion_spread)
-        
-        # Emergency response routing
-        if severity > 0.7:  # High severity
-            self._coordinate_emergency_response(incident)
+        Args:
+            origin: Origin node ID (random if None)
+            destination: Destination node ID (random if None)
+            vehicle_type: Type of vehicle (car, bus, truck)
+            
+        Returns:
+            Vehicle ID
+        """
+        return self.vehicle_router.add_vehicle(origin, destination, vehicle_type)
+
+    def is_running(self) -> bool:
+        """Return whether the simulation is running."""
+        return self.is_running
