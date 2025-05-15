@@ -155,7 +155,10 @@ function App() {
         if (data.type === "city_graph") {
           setCityGraph(data.data);
           if (data.data.nodes && data.data.nodes.length > 0) {
-            setMapCenter([data.data.nodes[0].lat, data.data.nodes[0].lon]);
+            // Only set map center if not explicitly provided elsewhere
+            if (!data.center) {
+              setMapCenter([data.data.nodes[0].lat, data.data.nodes[0].lon]);
+            }
           }
         } else if (data.type === "traffic_lights") {
           setTrafficLights(data.data);
@@ -171,6 +174,14 @@ function App() {
           setSimulationRunning(data.data.running);
           if (data.data.message) {
             showToast(data.data.message, data.data.status || "info");
+          }
+        } else if (data.type === "map_center") {
+          // Handle map center updates
+          if (data.data.center) {
+            setMapCenter(data.data.center);
+          }
+          if (data.data.zoom) {
+            setMapZoom(data.data.zoom);
           }
         }
       } catch (error) {
@@ -193,6 +204,7 @@ function App() {
   }, [showToast])
 
   const startSimulation = () => {
+    // Make sure we're using the current city name
     fetch("http://localhost:8001/simulation/start", {
       method: "POST",
       headers: {
@@ -211,6 +223,11 @@ function App() {
         if (data.status === "success") {
           setSimulationRunning(true)
           showToast(data.message, "success")
+
+          // If the city was changed on the server, update our local state
+          if (data.city && data.city !== cityName) {
+            setCityName(data.city)
+          }
         } else {
           showToast(data.message, "error")
         }
@@ -266,10 +283,33 @@ function App() {
 
   const changeCity = (city: string) => {
     setCityName(city)
+
+    // Stop simulation if it's running
     if (simulationRunning) {
       stopSimulation()
     }
-    showToast(`City changed to ${city}`, "info")
+
+    // Send request to change city
+    fetch("http://localhost:8001/city/change", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ city }),
+    })
+      .then((response) => response.json())
+      .then((data) => {
+        console.log("City changed:", data)
+        if (data.status === "success") {
+          showToast(`City changed to ${city}`, "success")
+        } else {
+          showToast(data.message, "error")
+        }
+      })
+      .catch((error) => {
+        console.error("Error changing city:", error)
+        showToast("Error changing city", "error")
+      })
   }
 
   const updateSimulationSettings = (settings: any) => {

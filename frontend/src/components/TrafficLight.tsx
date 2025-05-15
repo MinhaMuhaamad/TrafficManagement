@@ -35,13 +35,30 @@ export const TrafficLight: React.FC<TrafficLightProps> = ({
     <div className="traffic-light-popup">
       <h3>Traffic Light {id}</h3>
 
+      {/* Visual traffic light representation */}
+      <div className="traffic-light-visual">
+        <div className={`traffic-light-housing`}>
+          <div className={`traffic-light-bulb red ${state === "red" ? "active" : ""}`} />
+          <div className={`traffic-light-bulb yellow ${state === "yellow" ? "active" : ""}`} />
+          <div className={`traffic-light-bulb green ${state === "green" ? "active" : ""}`} />
+        </div>
+      </div>
+
       <div className="light-status">
         <div className={`light-indicator ${state}`} />
         <span>Current state: {state.toUpperCase()}</span>
       </div>
 
-      <p>Changes in: {timeUntilChange} seconds</p>
-      <p>Queue length: {queueLength} vehicles</p>
+      <div className="traffic-light-details">
+        <div className="detail-item">
+          <span className="detail-label">Changes in:</span>
+          <span className="detail-value">{timeUntilChange} seconds</span>
+        </div>
+        <div className="detail-item">
+          <span className="detail-label">Queue length:</span>
+          <span className="detail-value">{queueLength} vehicles</span>
+        </div>
+      </div>
 
       {controlTrafficLight && trafficLightMode === "manual" && (
         <div className="traffic-light-controls">
