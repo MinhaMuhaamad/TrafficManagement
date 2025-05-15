@@ -16,6 +16,7 @@ import {
   EyeOff,
   Bus,
   Truck,
+  Navigation,
 } from "lucide-react"
 
 export interface SidebarProps {
@@ -156,6 +157,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
             >
               <BarChart3 size={18} />
               <span>Analytics</span>
+            </button>
+            <button
+              className={activeTab === "route_planner" ? "active" : ""}
+              onClick={() => setActiveTab("route_planner")}
+              title="Route Planner"
+            >
+              <Navigation size={18} />
+              <span>Routes</span>
             </button>
           </div>
 

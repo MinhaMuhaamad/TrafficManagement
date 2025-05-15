@@ -3,8 +3,10 @@ from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 import asyncio
 import random
+import heapq
+import math
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple, Set
 
 # Create FastAPI app
 app = FastAPI(title="Minimal WebSocket Server")
@@ -176,6 +178,260 @@ analytics_data = {
 
 # Incidents storage
 incidents = []
+
+# Smart City Traffic Management Functions
+
+# Function to build a graph from city data
+def build_city_graph(city_data, congestion_levels=None):
+    """
+    Build a graph representation of the city for routing algorithms
+    Returns a dictionary where keys are node IDs and values are dictionaries of neighbors with travel times
+    """
+    graph = {}
+
+    # Initialize all nodes
+    for node in city_data["nodes"]:
+        graph[node["id"]] = {}
+
+    # Add edges with travel times
+    for edge in city_data["edges"]:
+        source_id = edge["source_id"]
+        target_id = edge["target_id"]
+
+        # Calculate distance using Haversine formula (for realistic travel time)
+        source_lat, source_lon = edge["source_lat"], edge["source_lon"]
+        target_lat, target_lon = edge["target_lat"], edge["target_lon"]
+
+        # Calculate distance in kilometers
+        R = 6371  # Earth radius in kilometers
+        dLat = math.radians(target_lat - source_lat)
+        dLon = math.radians(target_lon - source_lon)
+        a = (math.sin(dLat/2) * math.sin(dLat/2) +
+             math.cos(math.radians(source_lat)) * math.cos(math.radians(target_lat)) *
+             math.sin(dLon/2) * math.sin(dLon/2))
+        c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
+        distance = R * c
+
+        # Base travel time (in minutes) - assuming 30 km/h average speed
+        base_travel_time = (distance / 30) * 60
+
+        # Apply congestion factor if available
+        congestion_factor = 1.0
+        if congestion_levels and edge["id"] in congestion_levels:
+            # Congestion increases travel time (1.0 = no congestion, 5.0 = severe congestion)
+            congestion_factor = 1.0 + (congestion_levels[edge["id"]] * 4.0)
+
+        travel_time = base_travel_time * congestion_factor
+
+        # Add edge in both directions (assuming bidirectional roads)
+        graph[source_id][target_id] = travel_time
+        graph[target_id][source_id] = travel_time
+
+    return graph
+
+# Dijkstra's algorithm for shortest path
+def find_shortest_path(graph, start_node, end_node):
+    """
+    Find the shortest path between start_node and end_node using Dijkstra's algorithm
+    Returns a tuple of (path, travel_time) where path is a list of node IDs
+    """
+    # Priority queue for Dijkstra's algorithm
+    queue = [(0, start_node, [])]  # (travel_time, current_node, path)
+    visited = set()
+
+    while queue:
+        # Get node with smallest travel time
+        travel_time, current, path = heapq.heappop(queue)
+
+        # If we've reached the destination, return the path and travel time
+        if current == end_node:
+            return path + [current], travel_time
+
+        # Skip if we've already visited this node
+        if current in visited:
+            continue
+
+        # Mark as visited
+        visited.add(current)
+
+        # Add neighbors to queue
+        for neighbor, edge_time in graph.get(current, {}).items():
+            if neighbor not in visited:
+                heapq.heappush(queue, (travel_time + edge_time, neighbor, path + [current]))
+
+    # No path found
+    return None, float('inf')
+
+# Function to optimize traffic light timings
+def optimize_traffic_lights(city_data, congestion_levels, traffic_lights):
+    """
+    Optimize traffic light timings based on current congestion levels
+    Returns updated traffic light data
+    """
+    optimized_lights = []
+
+    # Create a mapping of node IDs to traffic lights
+    node_to_light = {}
+    for light in traffic_lights:
+        # Find the closest node to this traffic light
+        closest_node = None
+        min_distance = float('inf')
+
+        for node in city_data["nodes"]:
+            # Calculate distance between light and node
+            distance = math.sqrt(
+                (light["lat"] - node["lat"])**2 +
+                (light["lon"] - node["lon"])**2
+            )
+
+            if distance < min_distance:
+                min_distance = distance
+                closest_node = node["id"]
+
+        if closest_node:
+            node_to_light[closest_node] = light
+
+    # For each traffic light, adjust timing based on incoming road congestion
+    for light in traffic_lights:
+        updated_light = light.copy()
+
+        # Find the node this light is associated with
+        closest_node = None
+        min_distance = float('inf')
+
+        for node in city_data["nodes"]:
+            distance = math.sqrt(
+                (light["lat"] - node["lat"])**2 +
+                (light["lon"] - node["lon"])**2
+            )
+
+            if distance < min_distance:
+                min_distance = distance
+                closest_node = node["id"]
+
+        if closest_node:
+            # Find all edges connected to this node
+            incoming_edges = []
+            for edge in city_data["edges"]:
+                if edge["target_id"] == closest_node or edge["source_id"] == closest_node:
+                    incoming_edges.append(edge["id"])
+
+            # Calculate average congestion on incoming edges
+            avg_congestion = 0.0
+            if incoming_edges:
+                total_congestion = sum(congestion_levels.get(edge_id, 0.0) for edge_id in incoming_edges)
+                avg_congestion = total_congestion / len(incoming_edges)
+
+            # Adjust green time based on congestion
+            # Higher congestion = longer green time (up to a limit)
+            base_green_time = 30  # Base green time in seconds
+            max_adjustment = 30   # Maximum adjustment in seconds
+
+            # Calculate adjustment factor (0 to 1)
+            adjustment_factor = min(1.0, avg_congestion * 1.5)
+
+            # Apply adjustment
+            green_time = base_green_time + (adjustment_factor * max_adjustment)
+
+            # Update the light timing
+            updated_light["next_change"] = datetime.now().timestamp() + green_time
+
+            # Prioritize green for congested directions
+            if avg_congestion > 0.5:  # If congestion is high
+                updated_light["state"] = "green"
+
+        optimized_lights.append(updated_light)
+
+    return optimized_lights
+
+# Function to suggest rerouting for vehicles based on current conditions
+def suggest_rerouting(vehicles, city_data, congestion_levels, incidents):
+    """
+    Suggest new routes for vehicles based on current traffic conditions
+    Returns updated vehicle data with new routes
+    """
+    # Build the city graph with current congestion levels
+    city_graph = build_city_graph(city_data, congestion_levels)
+
+    # Create a mapping of node names to IDs for easier lookup
+    node_name_to_id = {node["name"]: node["id"] for node in city_data["nodes"]}
+    node_id_to_node = {node["id"]: node for node in city_data["nodes"]}
+
+    updated_vehicles = []
+
+    for vehicle in vehicles:
+        updated_vehicle = vehicle.copy()
+
+        # Skip vehicles that have already arrived
+        if vehicle["status"] == "arrived":
+            updated_vehicles.append(updated_vehicle)
+            continue
+
+        # Find node IDs for origin and destination
+        origin_id = None
+        destination_id = None
+
+        for node in city_data["nodes"]:
+            if node["name"] == vehicle["origin"]:
+                origin_id = node["id"]
+            if node["name"] == vehicle["destination"]:
+                destination_id = node["id"]
+
+        # If we can't find the nodes, skip this vehicle
+        if not origin_id or not destination_id:
+            updated_vehicles.append(updated_vehicle)
+            continue
+
+        # Find the current position's closest node
+        current_pos_node = None
+        min_distance = float('inf')
+
+        for node in city_data["nodes"]:
+            distance = math.sqrt(
+                (vehicle["lat"] - node["lat"])**2 +
+                (vehicle["lon"] - node["lon"])**2
+            )
+
+            if distance < min_distance:
+                min_distance = distance
+                current_pos_node = node["id"]
+
+        # If we can't determine current position, use origin
+        if not current_pos_node:
+            current_pos_node = origin_id
+
+        # Find the shortest path from current position to destination
+        path, travel_time = find_shortest_path(city_graph, current_pos_node, destination_id)
+
+        # If a path is found, update the vehicle's route
+        if path:
+            # Convert node IDs to coordinates for the route
+            new_route = []
+            for node_id in path:
+                node = node_id_to_node[node_id]
+                new_route.append({"lat": node["lat"], "lon": node["lon"]})
+
+            # Update the vehicle's route and ETA
+            updated_vehicle["current_route"] = new_route
+            updated_vehicle["eta"] = datetime.now().timestamp() + (travel_time * 60)  # Convert minutes to seconds
+
+            # Check if the vehicle is affected by incidents
+            for incident in incidents:
+                # Calculate distance to incident
+                incident_distance = math.sqrt(
+                    (vehicle["lat"] - incident["lat"])**2 +
+                    (vehicle["lon"] - incident["lon"])**2
+                )
+
+                # If vehicle is close to an incident, mark it as affected
+                if incident_distance < 0.01:  # Approximately 1km
+                    updated_vehicle["status"] = "rerouting"
+                    # Add some delay due to the incident
+                    updated_vehicle["eta"] += random.randint(300, 900)  # 5-15 minutes delay
+
+        updated_vehicles.append(updated_vehicle)
+
+    return updated_vehicles
 
 # Helper function to calculate analytics data
 def calculate_analytics_data(vehicles, traffic_lights, city_data):
@@ -368,8 +624,24 @@ async def websocket_endpoint(websocket: WebSocket):
                 # Get current city data
                 city_data = CITY_DATA[current_city]
 
+                # Generate congestion levels for each edge
+                congestion_levels = {}
+                for edge in city_data["edges"]:
+                    # Generate a random congestion level between 0 and 1
+                    # Higher for edges with more traffic lights nearby
+                    base_congestion = random.uniform(0.1, 0.6)
+
+                    # Add some randomness based on time
+                    time_factor = (datetime.now().minute % 10) / 10.0
+                    congestion = min(1.0, base_congestion + (time_factor * 0.4))
+
+                    congestion_levels[edge["id"]] = congestion
+
                 # Generate updated vehicles with dynamic movement
                 vehicles = generate_vehicles_for_city(current_city)
+
+                # Apply smart routing to vehicles
+                vehicles = suggest_rerouting(vehicles, city_data, congestion_levels, incidents)
 
                 # Add some random movement to each vehicle
                 for vehicle in vehicles:
@@ -386,22 +658,19 @@ async def websocket_endpoint(websocket: WebSocket):
                     "data": vehicles
                 })
 
-                # Send updated traffic light states with dynamic changes
-                light_states = ["red", "green", "yellow"]
-                current_second = datetime.now().second
+                # Optimize traffic light timings based on congestion
+                updated_traffic_lights = optimize_traffic_lights(city_data, congestion_levels, city_data["traffic_lights"])
 
-                # Update traffic light states
-                updated_traffic_lights = []
-                for i, light in enumerate(city_data["traffic_lights"]):
-                    updated_light = light.copy()
-                    updated_light["state"] = light_states[(current_second // 10 + i) % 3]
-                    updated_light["next_change"] = current_time + (10 - current_second % 10)
-                    updated_light["queue_length"] = random.randint(0, 5)
-                    updated_traffic_lights.append(updated_light)
-
+                # Send updated traffic lights
                 await websocket.send_json({
                     "type": "traffic_lights",
                     "data": updated_traffic_lights
+                })
+
+                # Send congestion levels
+                await websocket.send_json({
+                    "type": "congestion",
+                    "data": congestion_levels
                 })
 
                 # Calculate and send analytics data
@@ -635,22 +904,139 @@ async def add_incident(incident_data: dict):
         "incident": new_incident
     }
 
+# Route planning endpoint
+@app.post("/route/plan")
+async def plan_route(route_data: dict):
+    global current_city
+
+    # Extract route data
+    origin_lat = route_data.get("origin_lat")
+    origin_lon = route_data.get("origin_lon")
+    destination_lat = route_data.get("destination_lat")
+    destination_lon = route_data.get("destination_lon")
+
+    if origin_lat is None or origin_lon is None or destination_lat is None or destination_lon is None:
+        return {
+            "status": "error",
+            "message": "Origin and destination coordinates are required",
+            "timestamp": datetime.now().isoformat()
+        }
+
+    # Get city data
+    city_data = CITY_DATA[current_city]
+
+    # Generate congestion levels
+    congestion_levels = {}
+    for edge in city_data["edges"]:
+        base_congestion = random.uniform(0.1, 0.6)
+        time_factor = (datetime.now().minute % 10) / 10.0
+        congestion = min(1.0, base_congestion + (time_factor * 0.4))
+        congestion_levels[edge["id"]] = congestion
+
+    # Find closest nodes to origin and destination
+    origin_node = None
+    destination_node = None
+    min_origin_distance = float('inf')
+    min_dest_distance = float('inf')
+
+    for node in city_data["nodes"]:
+        # Calculate distance to origin
+        origin_distance = math.sqrt(
+            (node["lat"] - origin_lat)**2 +
+            (node["lon"] - origin_lon)**2
+        )
+
+        # Calculate distance to destination
+        dest_distance = math.sqrt(
+            (node["lat"] - destination_lat)**2 +
+            (node["lon"] - destination_lon)**2
+        )
+
+        if origin_distance < min_origin_distance:
+            min_origin_distance = origin_distance
+            origin_node = node
+
+        if dest_distance < min_dest_distance:
+            min_dest_distance = dest_distance
+            destination_node = node
+
+    if not origin_node or not destination_node:
+        return {
+            "status": "error",
+            "message": "Could not find suitable nodes for routing",
+            "timestamp": datetime.now().isoformat()
+        }
+
+    # Build the city graph with congestion
+    city_graph = build_city_graph(city_data, congestion_levels)
+
+    # Find the shortest path
+    path, travel_time = find_shortest_path(city_graph, origin_node["id"], destination_node["id"])
+
+    if not path:
+        return {
+            "status": "error",
+            "message": "Could not find a path between the specified points",
+            "timestamp": datetime.now().isoformat()
+        }
+
+    # Convert path to coordinates
+    route_coordinates = []
+    node_id_to_node = {node["id"]: node for node in city_data["nodes"]}
+
+    for node_id in path:
+        node = node_id_to_node[node_id]
+        route_coordinates.append({
+            "lat": node["lat"],
+            "lon": node["lon"],
+            "name": node["name"]
+        })
+
+    # Calculate ETA
+    eta_seconds = travel_time * 60  # Convert minutes to seconds
+    eta = datetime.now().timestamp() + eta_seconds
+
+    # Create route response
+    route_response = {
+        "origin": {
+            "lat": origin_lat,
+            "lon": origin_lon,
+            "node_name": origin_node["name"]
+        },
+        "destination": {
+            "lat": destination_lat,
+            "lon": destination_lon,
+            "node_name": destination_node["name"]
+        },
+        "route": route_coordinates,
+        "travel_time_minutes": travel_time,
+        "eta": eta,
+        "distance_km": travel_time / 60 * 30,  # Assuming 30 km/h average speed
+        "congestion_factor": sum(congestion_levels.get(edge["id"], 0) for edge in city_data["edges"] if edge["source_id"] in path and edge["target_id"] in path) / max(1, len(path) - 1)
+    }
+
+    return {
+        "status": "success",
+        "message": "Route planned successfully",
+        "timestamp": datetime.now().isoformat(),
+        "route": route_response
+    }
+
 # Vehicle endpoints
 @app.post("/vehicles/add")
 async def add_vehicle(vehicle_data: dict):
-    global current_city
+    global current_city, incidents
 
     # Extract vehicle data
     origin = vehicle_data.get("origin")
     destination = vehicle_data.get("destination")
     vehicle_type = vehicle_data.get("type", "car")
 
-    if not origin or not destination:
-        return {
-            "status": "error",
-            "message": "Origin and destination are required",
-            "timestamp": datetime.now().isoformat()
-        }
+    # New parameters for map-based selection
+    origin_lat = vehicle_data.get("origin_lat")
+    origin_lon = vehicle_data.get("origin_lon")
+    destination_lat = vehicle_data.get("destination_lat")
+    destination_lon = vehicle_data.get("destination_lon")
 
     # Get city data
     city_data = CITY_DATA[current_city]
@@ -659,11 +1045,41 @@ async def add_vehicle(vehicle_data: dict):
     origin_node = None
     destination_node = None
 
-    for node in city_data["nodes"]:
-        if node["name"] == origin:
-            origin_node = node
-        if node["name"] == destination:
-            destination_node = node
+    # If coordinates are provided, find the closest nodes
+    if origin_lat is not None and origin_lon is not None:
+        min_distance = float('inf')
+        for node in city_data["nodes"]:
+            distance = math.sqrt(
+                (node["lat"] - origin_lat)**2 +
+                (node["lon"] - origin_lon)**2
+            )
+            if distance < min_distance:
+                min_distance = distance
+                origin_node = node
+
+    if destination_lat is not None and destination_lon is not None:
+        min_distance = float('inf')
+        for node in city_data["nodes"]:
+            distance = math.sqrt(
+                (node["lat"] - destination_lat)**2 +
+                (node["lon"] - destination_lon)**2
+            )
+            if distance < min_distance:
+                min_distance = distance
+                destination_node = node
+
+    # If names are provided, find the nodes by name
+    if not origin_node and origin:
+        for node in city_data["nodes"]:
+            if node["name"] == origin:
+                origin_node = node
+                break
+
+    if not destination_node and destination:
+        for node in city_data["nodes"]:
+            if node["name"] == destination:
+                destination_node = node
+                break
 
     if not origin_node or not destination_node:
         return {
@@ -672,6 +1088,38 @@ async def add_vehicle(vehicle_data: dict):
             "timestamp": datetime.now().isoformat()
         }
 
+    # Generate congestion levels
+    congestion_levels = {}
+    for edge in city_data["edges"]:
+        base_congestion = random.uniform(0.1, 0.6)
+        time_factor = (datetime.now().minute % 10) / 10.0
+        congestion = min(1.0, base_congestion + (time_factor * 0.4))
+        congestion_levels[edge["id"]] = congestion
+
+    # Build the city graph with congestion
+    city_graph = build_city_graph(city_data, congestion_levels)
+
+    # Find the shortest path
+    path, travel_time = find_shortest_path(city_graph, origin_node["id"], destination_node["id"])
+
+    if not path:
+        return {
+            "status": "error",
+            "message": "Could not find a path between the specified points",
+            "timestamp": datetime.now().isoformat()
+        }
+
+    # Convert path to coordinates
+    route_coordinates = []
+    node_id_to_node = {node["id"]: node for node in city_data["nodes"]}
+
+    for node_id in path:
+        node = node_id_to_node[node_id]
+        route_coordinates.append({
+            "lat": node["lat"],
+            "lon": node["lon"]
+        })
+
     # Generate a unique ID
     vehicle_id = f"{current_city.lower().replace(' ', '_')}_custom_{datetime.now().strftime('%H%M%S')}"
 
@@ -679,18 +1127,10 @@ async def add_vehicle(vehicle_data: dict):
     base_speed = 25 if vehicle_type == "car" else (20 if vehicle_type == "bus" else 15)
     speed = base_speed + random.uniform(-5, 10)
 
-    # Calculate ETA (just a rough estimate)
-    eta = datetime.now().timestamp() + random.randint(60, 300)  # 1-5 minutes
+    # Calculate ETA based on travel time from routing
+    eta = datetime.now().timestamp() + (travel_time * 60)  # Convert minutes to seconds
 
-    # Create a simple route
-    route = [
-        {"lat": origin_node["lat"], "lon": origin_node["lon"]},
-        {"lat": origin_node["lat"] + (destination_node["lat"] - origin_node["lat"]) * 0.5,
-         "lon": origin_node["lon"] + (destination_node["lon"] - origin_node["lon"]) * 0.5},
-        {"lat": destination_node["lat"], "lon": destination_node["lon"]}
-    ]
-
-    # Create the vehicle
+    # Create the vehicle with optimized route
     new_vehicle = {
         "id": vehicle_id,
         "type": vehicle_type,
@@ -701,8 +1141,22 @@ async def add_vehicle(vehicle_data: dict):
         "speed": speed,
         "status": "moving",
         "eta": eta,
-        "current_route": route
+        "current_route": route_coordinates
     }
+
+    # Check if the route passes near any incidents
+    for incident in incidents:
+        for point in route_coordinates:
+            incident_distance = math.sqrt(
+                (point["lat"] - incident["lat"])**2 +
+                (point["lon"] - incident["lon"])**2
+            )
+
+            # If route passes near an incident, mark as affected and add delay
+            if incident_distance < 0.01:  # Approximately 1km
+                new_vehicle["status"] = "affected_by_incident"
+                new_vehicle["eta"] += random.randint(300, 900)  # 5-15 minutes delay
+                break
 
     # Generate a new set of vehicles including this one
     vehicles = generate_vehicles_for_city(current_city)
@@ -713,9 +1167,14 @@ async def add_vehicle(vehicle_data: dict):
 
     return {
         "status": "success",
-        "message": f"Vehicle added: {vehicle_type}",
+        "message": f"Vehicle added: {vehicle_type} with optimized route",
         "timestamp": datetime.now().isoformat(),
-        "vehicle": new_vehicle
+        "vehicle": new_vehicle,
+        "route_details": {
+            "path": [node_id_to_node[node_id]["name"] for node_id in path],
+            "travel_time_minutes": travel_time,
+            "distance_km": travel_time / 60 * 30  # Assuming 30 km/h average speed
+        }
     }
 
 if __name__ == "__main__":

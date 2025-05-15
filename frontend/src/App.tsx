@@ -12,6 +12,7 @@ import { Sidebar } from "./components/Sidebar"
 import { ControlPanel } from "./components/ControlPanel"
 import { Analytics } from "./components/Analytics"
 import { Toast } from "./components/Toast"
+import { RoutePlanner } from "./components/RoutePlanner"
 
 // Fix Leaflet icon issue
 L.Icon.Default.imagePath = "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/"
@@ -591,6 +592,16 @@ function App() {
             trafficLights={trafficLights}
             incidents={incidents}
             congestionLevels={congestionLevels}
+          />
+        )}
+
+        {activeTab === "route_planner" && (
+          <RoutePlanner
+            cityGraph={cityGraph}
+            mapCenter={mapCenter}
+            mapZoom={mapZoom}
+            addVehicle={addVehicle}
+            showToast={showToast}
           />
         )}
       </div>
